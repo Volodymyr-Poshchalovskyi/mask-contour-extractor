@@ -4,10 +4,11 @@ import cv2
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QFileDialog, QMessageBox, 
                              QScrollArea, QStackedWidget, QSizePolicy, QApplication)
-from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QPolygonF
+from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QPolygonF, QColor
 from PyQt6.QtCore import Qt, QPointF
 
-from utils import read_image_safe
+# Імпортуємо ваші модулі
+from utils import read_image_safe, process_contour
 from models import MaskObjectData
 from scanner import scan_directory
 from widgets import ObjectListItem
@@ -23,7 +24,7 @@ class MaskEditorApp(QMainWindow):
         self.init_ui()
 
     def init_ui(self):
-        self.setWindowTitle("Smart Mask Editor (Modular)")
+        self.setWindowTitle("Smart Mask Editor (WYSIWYG Mode)")
         self.resize(1200, 800)
         self.setStyleSheet("background-color: #2b2b2b; color: #ffffff;")
 
@@ -119,6 +120,7 @@ class MaskEditorApp(QMainWindow):
         self.stacked_widget.addWidget(self.editor_widget)
 
     # --- Sync Logic ---
+
     def sync_visibility(self, name, is_visible):
         if name in self.global_registry:
             self.global_registry[name]['visible'] = is_visible
@@ -150,6 +152,41 @@ class MaskEditorApp(QMainWindow):
                     obj.display_name = new_name
         self.update_view()
 
+    def sync_mode(self, name, mode):
+        """
+        Змінює режим оптимізації і миттєво перераховує точки, 
+        щоб це відобразилось на екрані.
+        """
+        # 1. Оновлюємо глобальний реєстр
+        if name in self.global_registry:
+            self.global_registry[name]['mode'] = mode
+            
+        # 2. Оновлюємо об'єкти у всіх сценах
+        for scene in self.scenes:
+            base_folder = os.path.dirname(scene.main_path)
+            
+            for obj in scene.objects:
+                if obj.display_name == name:
+                    obj.optimization_mode = mode
+                    
+                    # Перераховуємо контур з новим режимом
+                    # Читаємо оригінальну маску
+                    mask_path = os.path.join(base_folder, obj.original_filename)
+                    mask_img = read_image_safe(mask_path, cv2.IMREAD_GRAYSCALE)
+                    
+                    if mask_img is not None:
+                         _, thresh = cv2.threshold(mask_img, 127, 255, cv2.THRESH_BINARY)
+                         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                         if contours:
+                             c = max(contours, key=cv2.contourArea)
+                             
+                             # ВАЖЛИВО: Перезаписуємо json_points новими даними
+                             # process_contour повертає прямокутник або спрощену лінію
+                             obj.json_points = process_contour(c, mode)
+
+        # 3. Перемальовуємо екран
+        self.update_view()
+
     # --- Actions ---
     def select_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Виберіть папку")
@@ -159,7 +196,6 @@ class MaskEditorApp(QMainWindow):
     def process_folder(self, folder):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            # Викликаємо логіку з scanner.py
             self.scenes, self.global_registry, self.all_unique_names = scan_directory(folder)
             
             if not self.scenes:
@@ -213,8 +249,13 @@ class MaskEditorApp(QMainWindow):
                 obj_in_scene.is_present_in_frame = True
                 item = ObjectListItem(obj_in_scene, self)
             else:
-                settings = self.global_registry.get(name, {'color': Qt.GlobalColor.gray, 'visible': True})
-                ghost_obj = MaskObjectData("", [], [], settings['color'], name, settings['visible'])
+                settings = self.global_registry.get(name, {
+                    'color': Qt.GlobalColor.gray, 
+                    'visible': True, 
+                    'mode': 'Balanced'
+                })
+                # Створюємо фіктивний об'єкт для списку
+                ghost_obj = MaskObjectData("", [], [], settings['color'], name, settings['visible'], settings['mode'])
                 ghost_obj.is_present_in_frame = False
                 item = ObjectListItem(ghost_obj, self)
             
@@ -223,6 +264,10 @@ class MaskEditorApp(QMainWindow):
         self.redraw_image()
 
     def redraw_image(self):
+        """
+        Малює зображення. 
+        ВАЖЛИВО: Малюємо json_points, щоб бачити РЕАЛЬНИЙ вигляд ліній (прямі/криві).
+        """
         scene = self.scenes[self.current_idx]
         cv_img = read_image_safe(scene.main_path, cv2.IMREAD_COLOR)
         if cv_img is None: return
@@ -236,12 +281,22 @@ class MaskEditorApp(QMainWindow):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         for obj in scene.objects:
-            if obj.is_visible and obj.visual_points:
+            if obj.is_visible and obj.json_points:
                 pen = QPen(obj.color)
-                pen.setWidth(4)
+                pen.setWidth(3)
                 painter.setPen(pen)
-                poly_points = [QPointF(pt[0], pt[1]) for pt in obj.visual_points]
-                painter.drawPolygon(QPolygonF(poly_points))
+                
+                # Малюємо оптимізовані точки (json_points)
+                poly_points = [QPointF(pt[0], pt[1]) for pt in obj.json_points]
+                
+                if len(poly_points) > 1:
+                    painter.drawPolygon(QPolygonF(poly_points))
+                    
+                # Малюємо точки вершин (кути), щоб бачити структуру
+                painter.setBrush(obj.color)
+                for pt in poly_points:
+                    painter.drawEllipse(pt, 3, 3)
+
         painter.end()
 
         if self.lbl_image.width() > 0:
@@ -268,7 +323,8 @@ class MaskEditorApp(QMainWindow):
                     entry["objects"].append({
                         "name": obj.display_name,
                         "original_mask": obj.original_filename,
-                        "points": obj.json_points
+                        "points": obj.json_points,
+                        "mode": obj.optimization_mode # Зберігаємо режим
                     })
             output_data.append(entry)
 
