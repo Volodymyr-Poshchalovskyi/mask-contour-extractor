@@ -8,7 +8,7 @@ import numpy as np
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QFileDialog, QMessageBox, 
                              QScrollArea, QStackedWidget, QSizePolicy, QApplication, 
-                             QCheckBox, QLineEdit, QFrame)
+                             QCheckBox, QLineEdit, QFrame, QInputDialog) # <--- Додано QInputDialog
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QPolygonF, QColor, QBrush, QCursor, QAction, QKeySequence
 from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
 
@@ -25,7 +25,7 @@ class EditorCanvas(QWidget):
         super().__init__(parent)
         self.setMouseTracking(True)
         self.parent_app = parent
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus) # Canvas не краде фокус у вікна
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         
         self.scene = None
         self.current_image = None
@@ -73,11 +73,9 @@ class EditorCanvas(QWidget):
                 q_img = QImage(cv_img.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
                 self.original_pixmap = QPixmap.fromImage(q_img)
                 
-                # Ініціалізація кропу або підгонка під розмір
                 if self.global_crop_rect is None:
                     self.global_crop_rect = QRectF(0, 0, w, h)
                 else:
-                    # Захист: якщо нове фото менше за попередній кроп
                     img_rect = QRectF(0, 0, w, h)
                     self.global_crop_rect = self.global_crop_rect.intersected(img_rect)
                     
@@ -89,9 +87,7 @@ class EditorCanvas(QWidget):
         self.update()
 
     def update_current_image_view(self):
-        """Вирізає шматок з original_pixmap для відображення"""
         if self.original_pixmap and self.global_crop_rect:
-            # toRect() округлює, intersected гарантує межі
             safe_rect = self.global_crop_rect.toRect().intersected(self.original_pixmap.rect())
             self.current_image = self.original_pixmap.copy(safe_rect)
         else:
@@ -164,15 +160,12 @@ class EditorCanvas(QWidget):
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No Image Loaded")
             return
 
-        # ЛОГІКА ВІДОБРАЖЕННЯ
         if self.is_cropping_mode:
-            # 1. Малюємо ПОВНЕ фото
             img_rect = QRectF(self.offset.x(), self.offset.y(), 
                               self.original_pixmap.width() * self.zoom_level, 
                               self.original_pixmap.height() * self.zoom_level)
             painter.drawPixmap(img_rect.toRect(), self.original_pixmap)
 
-            # 2. Затемнення
             overlay_color = QColor(0, 0, 0, 150)
             painter.setBrush(overlay_color)
             painter.setPen(Qt.PenStyle.NoPen)
@@ -181,26 +174,22 @@ class EditorCanvas(QWidget):
             br = self.transform_to_screen(self.temp_crop_rect.bottomRight())
             screen_crop_rect = QRectF(tl, br)
             
-            # Малюємо 4 прямокутники навколо кропу (замість QPainterPath)
-            painter.drawRect(QRectF(0, 0, self.width(), screen_crop_rect.top())) # Верх
-            painter.drawRect(QRectF(0, screen_crop_rect.bottom(), self.width(), self.height() - screen_crop_rect.bottom())) # Низ
-            painter.drawRect(QRectF(0, screen_crop_rect.top(), screen_crop_rect.left(), screen_crop_rect.height())) # Ліво
-            painter.drawRect(QRectF(screen_crop_rect.right(), screen_crop_rect.top(), self.width() - screen_crop_rect.right(), screen_crop_rect.height())) # Право
+            painter.drawRect(QRectF(0, 0, self.width(), screen_crop_rect.top()))
+            painter.drawRect(QRectF(0, screen_crop_rect.bottom(), self.width(), self.height() - screen_crop_rect.bottom()))
+            painter.drawRect(QRectF(0, screen_crop_rect.top(), screen_crop_rect.left(), screen_crop_rect.height()))
+            painter.drawRect(QRectF(screen_crop_rect.right(), screen_crop_rect.top(), self.width() - screen_crop_rect.right(), screen_crop_rect.height()))
 
-            # 3. Рамка кропу
             pen = QPen(Qt.GlobalColor.white, 2, Qt.PenStyle.DashLine)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(screen_crop_rect)
 
-            # 4. Ручки
             painter.setBrush(Qt.GlobalColor.white)
             painter.setPen(Qt.GlobalColor.black)
             handles = self.get_crop_handles(screen_crop_rect)
             for h_rect in handles.values():
                 painter.drawRect(h_rect)
                 
-            # Сітка третин
             pen.setColor(QColor(255, 255, 255, 80))
             pen.setStyle(Qt.PenStyle.SolidLine)
             pen.setWidth(1)
@@ -213,19 +202,16 @@ class EditorCanvas(QWidget):
             painter.drawLine(QPointF(screen_crop_rect.left(), screen_crop_rect.top() + 2*h3), QPointF(screen_crop_rect.right(), screen_crop_rect.top() + 2*h3))
 
         else:
-            # ЗВИЧАЙНИЙ РЕЖИМ
             if self.current_image:
                 img_rect = QRectF(self.offset.x(), self.offset.y(), 
                                   self.current_image.width() * self.zoom_level, 
                                   self.current_image.height() * self.zoom_level)
                 painter.drawPixmap(img_rect.toRect(), self.current_image)
 
-            # Малюємо об'єкти
             for obj in self.scene.objects:
                 if not obj.is_visible or not obj.json_points: continue
                 
                 screen_points = [self.transform_to_screen(QPointF(p[0], p[1])) for p in obj.json_points]
-                
                 polygon = QPolygonF(screen_points)
                 pen = QPen(obj.color)
                 if obj == self.selected_obj:
@@ -299,7 +285,7 @@ class EditorCanvas(QWidget):
                 self.last_mouse_pos = pos
             return
 
-        self.parent_app.setFocus() # Повертаємо фокус головному вікну для стрілок
+        self.parent_app.setFocus() 
         
         if event.button() == Qt.MouseButton.LeftButton:
             if self.selected_obj:
@@ -341,7 +327,6 @@ class EditorCanvas(QWidget):
             if self.active_crop_handle:
                 delta_screen = pos - self.last_mouse_pos
                 delta_img = delta_screen / self.zoom_level
-                
                 rect = self.temp_crop_rect
                 
                 if self.active_crop_handle == 'move':
@@ -352,7 +337,6 @@ class EditorCanvas(QWidget):
                     if 'r' in self.active_crop_handle: new_rect.setRight(new_rect.right() + delta_img.x())
                     if 't' in self.active_crop_handle: new_rect.setTop(new_rect.top() + delta_img.y())
                     if 'b' in self.active_crop_handle: new_rect.setBottom(new_rect.bottom() + delta_img.y())
-                    
                     new_rect = new_rect.normalized()
 
                     if self.crop_aspect_ratio:
@@ -404,7 +388,6 @@ class EditorCanvas(QWidget):
             self.update()
             return
 
-        # Hit Testing
         self.hovered_point_idx = -1
         self.hovered_segment_idx = -1
         self.hovered_segment_point = None
@@ -821,12 +804,15 @@ class MaskEditorApp(QMainWindow):
 
     def select_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Виберіть папку")
-        if folder: self.process_folder(folder)
+        if folder:
+            val, ok = QInputDialog.getDouble(self, "Точність (Epsilon)", "Введіть точність генерації точок (0.001 - детально, 0.005 - рівно):", 0.002, 0.0001, 0.1, 4)
+            if ok:
+                self.process_folder(folder, val)
 
-    def process_folder(self, folder):
+    def process_folder(self, folder, epsilon):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            self.scenes, self.global_registry, self.all_unique_names = scan_directory(folder)
+            self.scenes, self.global_registry, self.all_unique_names = scan_directory(folder, epsilon)
             if not self.scenes:
                 QMessageBox.warning(self, "Увага", "Не знайдено файлів 1XXXX.jpg")
             else:

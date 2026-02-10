@@ -19,12 +19,12 @@ def normalize_name(filename):
     base = re.sub(r'\d{4}$', '', base).strip()
     return base.capitalize() if base else "Object"
 
-def get_initial_points(contour):
+# --- ЗМІНА ТУТ ---
+def get_initial_points(contour, epsilon_factor=0.002):
     """
-    Базове спрощення для старту.
-    Ми використовуємо дуже малий epsilon, щоб зберегти форму,
-    але прибрати 'сходинки' пікселів. Далі користувач править сам.
+    Генерує точки з заданою точністю.
+    epsilon_factor: Менше (0.001) = більше точок/деталей. Більше (0.005) = пряміші лінії.
     """
-    epsilon = 0.002 * cv2.arcLength(contour, True)
+    epsilon = epsilon_factor * cv2.arcLength(contour, True)
     approx = cv2.approxPolyDP(contour, epsilon, True)
     return approx.reshape(-1, 2).tolist()
