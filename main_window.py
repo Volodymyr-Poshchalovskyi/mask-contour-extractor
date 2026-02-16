@@ -8,7 +8,7 @@ import numpy as np
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QFileDialog, QMessageBox, 
                              QScrollArea, QStackedWidget, QSizePolicy, QApplication, 
-                             QCheckBox, QLineEdit, QFrame, QInputDialog) # <--- Додано QInputDialog
+                             QCheckBox, QLineEdit, QFrame, QInputDialog)
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QPolygonF, QColor, QBrush, QCursor, QAction, QKeySequence
 from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
 
@@ -27,35 +27,28 @@ class EditorCanvas(QWidget):
         self.parent_app = parent
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         
+        # ВАЖЛИВО: Ініціалізація змінних
         self.scene = None
         self.current_image = None
         self.original_pixmap = None 
-        
         self.zoom_level = 1.0
         self.offset = QPointF(0, 0)
-        
-        # --- CROP STATE ---
         self.global_crop_rect = None 
         self.is_cropping_mode = False
         self.temp_crop_rect = QRectF()
         self.crop_handle_size = 10
         self.active_crop_handle = None 
         self.crop_aspect_ratio = None 
-
-        # Editor State
         self.selected_obj = None
         self.drag_active = False
         self.last_mouse_pos = QPointF(0, 0)
-        
         self.hovered_point_idx = -1
         self.dragging_point = False
         self.hovered_segment_idx = -1
         self.hovered_segment_point = None
-
         self.smart_snap_enabled = True
         self.active_guides = [] 
         self.snap_lines = []
-
         self.undo_stack = []
         self.redo_stack = []
 
@@ -93,7 +86,7 @@ class EditorCanvas(QWidget):
         else:
             self.current_image = self.original_pixmap
 
-    # --- CROP LOGIC ---
+    # --- CROP ---
     def start_crop_mode(self):
         self.is_cropping_mode = True
         if self.global_crop_rect:
@@ -118,8 +111,7 @@ class EditorCanvas(QWidget):
         self.crop_aspect_ratio = ratio
         if self.original_pixmap:
             img_w, img_h = self.original_pixmap.width(), self.original_pixmap.height()
-            
-            if ratio is None: # Free
+            if ratio is None:
                 self.temp_crop_rect = QRectF(10, 10, img_w - 20, img_h - 20)
             else:
                 target_w = img_w * 0.8
@@ -127,7 +119,6 @@ class EditorCanvas(QWidget):
                 if target_h > img_h * 0.8:
                     target_h = img_h * 0.8
                     target_w = target_h * ratio
-                
                 x = (img_w - target_w) / 2
                 y = (img_h - target_h) / 2
                 self.temp_crop_rect = QRectF(x, y, target_w, target_h)
@@ -161,11 +152,13 @@ class EditorCanvas(QWidget):
             return
 
         if self.is_cropping_mode:
+            # Draw Full Image
             img_rect = QRectF(self.offset.x(), self.offset.y(), 
                               self.original_pixmap.width() * self.zoom_level, 
                               self.original_pixmap.height() * self.zoom_level)
             painter.drawPixmap(img_rect.toRect(), self.original_pixmap)
 
+            # Draw Overlay
             overlay_color = QColor(0, 0, 0, 150)
             painter.setBrush(overlay_color)
             painter.setPen(Qt.PenStyle.NoPen)
@@ -174,22 +167,26 @@ class EditorCanvas(QWidget):
             br = self.transform_to_screen(self.temp_crop_rect.bottomRight())
             screen_crop_rect = QRectF(tl, br)
             
+            # 4 Rectangles for mask
             painter.drawRect(QRectF(0, 0, self.width(), screen_crop_rect.top()))
             painter.drawRect(QRectF(0, screen_crop_rect.bottom(), self.width(), self.height() - screen_crop_rect.bottom()))
             painter.drawRect(QRectF(0, screen_crop_rect.top(), screen_crop_rect.left(), screen_crop_rect.height()))
             painter.drawRect(QRectF(screen_crop_rect.right(), screen_crop_rect.top(), self.width() - screen_crop_rect.right(), screen_crop_rect.height()))
 
+            # Crop Border
             pen = QPen(Qt.GlobalColor.white, 2, Qt.PenStyle.DashLine)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(screen_crop_rect)
 
+            # Handles
             painter.setBrush(Qt.GlobalColor.white)
             painter.setPen(Qt.GlobalColor.black)
             handles = self.get_crop_handles(screen_crop_rect)
             for h_rect in handles.values():
                 painter.drawRect(h_rect)
                 
+            # Grid
             pen.setColor(QColor(255, 255, 255, 80))
             pen.setStyle(Qt.PenStyle.SolidLine)
             pen.setWidth(1)
@@ -202,12 +199,14 @@ class EditorCanvas(QWidget):
             painter.drawLine(QPointF(screen_crop_rect.left(), screen_crop_rect.top() + 2*h3), QPointF(screen_crop_rect.right(), screen_crop_rect.top() + 2*h3))
 
         else:
+            # Draw Cropped Image
             if self.current_image:
                 img_rect = QRectF(self.offset.x(), self.offset.y(), 
                                   self.current_image.width() * self.zoom_level, 
                                   self.current_image.height() * self.zoom_level)
                 painter.drawPixmap(img_rect.toRect(), self.current_image)
 
+            # Draw Objects
             for obj in self.scene.objects:
                 if not obj.is_visible or not obj.json_points: continue
                 
@@ -258,7 +257,7 @@ class EditorCanvas(QWidget):
             'br': QRectF(rect.right()-s, rect.bottom()-s, s, s),
         }
 
-    # --- MOUSE LOGIC ---
+    # --- MOUSE EVENTS ---
     def mousePressEvent(self, event):
         pos = event.position()
         
@@ -266,8 +265,8 @@ class EditorCanvas(QWidget):
             tl = self.transform_to_screen(self.temp_crop_rect.topLeft())
             br = self.transform_to_screen(self.temp_crop_rect.bottomRight())
             screen_rect = QRectF(tl, br)
-            
             handles = self.get_crop_handles(screen_rect)
+            
             clicked_handle = None
             for name, h_rect in handles.items():
                 if h_rect.contains(pos):
@@ -285,7 +284,7 @@ class EditorCanvas(QWidget):
                 self.last_mouse_pos = pos
             return
 
-        self.parent_app.setFocus() 
+        self.parent_app.setFocus()
         
         if event.button() == Qt.MouseButton.LeftButton:
             if self.selected_obj:
@@ -338,7 +337,6 @@ class EditorCanvas(QWidget):
                     if 't' in self.active_crop_handle: new_rect.setTop(new_rect.top() + delta_img.y())
                     if 'b' in self.active_crop_handle: new_rect.setBottom(new_rect.bottom() + delta_img.y())
                     new_rect = new_rect.normalized()
-
                     if self.crop_aspect_ratio:
                         if self.active_crop_handle in ['br', 'tr', 'bl', 'tl']:
                              current_ratio = new_rect.width() / new_rect.height() if new_rect.height() > 0 else 1
@@ -388,6 +386,7 @@ class EditorCanvas(QWidget):
             self.update()
             return
 
+        # Hit Testing
         self.hovered_point_idx = -1
         self.hovered_segment_idx = -1
         self.hovered_segment_point = None
@@ -434,7 +433,7 @@ class EditorCanvas(QWidget):
         self.offset = mouse_pos - (mouse_pos - self.offset) * (self.zoom_level / old_zoom)
         self.update()
 
-    # --- HELPERS AND MATH ---
+    # --- MATH ---
     def save_state_for_undo(self):
         if self.selected_obj:
             points_copy = copy.deepcopy(self.selected_obj.json_points)
@@ -549,7 +548,7 @@ class EditorCanvas(QWidget):
             self.update()
 
 
-# --- MAIN WINDOW ---
+# --- MAIN WINDOW CLASS ---
 class MaskEditorApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -894,7 +893,6 @@ class MaskEditorApp(QMainWindow):
                 
                 # --- CROP IMAGE EXPORT ---
                 if crop_rect:
-                    # ВАЖЛИВО: Використовуємо read_image_safe для читання (Unicode шляхи)
                     img_cv = read_image_safe(src_img, cv2.IMREAD_COLOR) 
                     
                     if img_cv is not None:
@@ -905,7 +903,6 @@ class MaskEditorApp(QMainWindow):
                         
                         cropped_img = img_cv[y:y+h, x:x+w]
                         
-                        # Для збереження також треба обережно (imencode + tofile) для Unicode
                         is_success, buffer = cv2.imencode(".jpg", cropped_img)
                         if is_success:
                             with open(dst_img, "wb") as f:

@@ -15,16 +15,28 @@ def read_image_safe(path, mode=cv2.IMREAD_COLOR):
 
 def normalize_name(filename):
     base = os.path.splitext(filename)[0]
+    base = re.sub(r'\s*\d{4,5}$', '', base) # Видаляє 4-5 цифр в кінці
     base = re.sub(r'^\d+_', '', base)
-    base = re.sub(r'\d{4}$', '', base).strip()
-    return base.capitalize() if base else "Object"
+    base = base.replace('_', ' ').strip().title()
+    return base if base else "Object"
 
-# --- ЗМІНА ТУТ ---
+def extract_frame_signature(filename):
+    """
+    Повертає останні 4 цифри імені файлу як РЯДОК (наприклад '0001').
+    Це критично для правильного розрізнення 'Apartment 1' на кадрі '0001'.
+    """
+    base = os.path.splitext(filename)[0]
+    # Шукаємо 4 цифри в самому кінці рядка
+    match = re.search(r'(\d{4})$', base.strip())
+    if match:
+        return match.group(1)
+    # Fallback: якщо цифр менше (наприклад 1.jpg)
+    match_short = re.search(r'(\d+)$', base.strip())
+    if match_short:
+        return match_short.group(1)
+    return None
+
 def get_initial_points(contour, epsilon_factor=0.002):
-    """
-    Генерує точки з заданою точністю.
-    epsilon_factor: Менше (0.001) = більше точок/деталей. Більше (0.005) = пряміші лінії.
-    """
     epsilon = epsilon_factor * cv2.arcLength(contour, True)
     approx = cv2.approxPolyDP(contour, epsilon, True)
     return approx.reshape(-1, 2).tolist()
